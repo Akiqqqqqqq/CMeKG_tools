@@ -22,7 +22,7 @@ import re
 
 class config:
     # batch_size = 32
-    batch_size = 2
+    batch_size = 16
     max_seq_len = 256
     # num_p = 23  # 关系数量
     num_p = 48  # 关系数量
@@ -154,7 +154,7 @@ class Model4po(nn.Module):
 
     def forward(self, hidden_states, batch_subject_ids, input_mask):
         all_s = torch.zeros((hidden_states.shape[0], hidden_states.shape[1], hidden_states.shape[2]),
-                            dtype=torch.float32)
+                            dtype=torch.float32).cuda()
 
         for b in range(hidden_states.shape[0]):
             s_start = batch_subject_ids[b][0]
@@ -213,14 +213,14 @@ def train(train_data_loader, model4s, model4po, optimizer):
             if bi >= len(train_data_loader) // config.batch_size:
                 break
             batch_token_ids, batch_mask_ids, batch_segment_ids, batch_subject_labels, batch_subject_ids, batch_object_labels = batch  # 取数据
-            batch_token_ids = torch.tensor(batch_token_ids, dtype=torch.long)  # batch_token_ids: 就是text中'字'的token化，shape=(m, max_len)
-            batch_mask_ids = torch.tensor(batch_mask_ids, dtype=torch.long)    # batch_mask_ids: 上述batch_token_ids中，把token变成1（掩码），shape=(m, max_len)
-            batch_segment_ids = torch.tensor(batch_segment_ids, dtype=torch.long)
-            batch_subject_labels = torch.tensor(batch_subject_labels, dtype=torch.float)  # batch_subject_labels: 这个对于batch里面每一个数据i，S在text中的起点、终点，shape=(m, max_len, 2)  [样本数量, 位置, 起点？终点]
+            batch_token_ids = torch.tensor(batch_token_ids, dtype=torch.long).cuda()  # batch_token_ids: 就是text中'字'的token化，shape=(m, max_len)
+            batch_mask_ids = torch.tensor(batch_mask_ids, dtype=torch.long).cuda()    # batch_mask_ids: 上述batch_token_ids中，把token变成1（掩码），shape=(m, max_len)
+            batch_segment_ids = torch.tensor(batch_segment_ids, dtype=torch.long).cuda()
+            batch_subject_labels = torch.tensor(batch_subject_labels, dtype=torch.float).cuda()  # batch_subject_labels: 这个对于batch里面每一个数据i，S在text中的起点、终点，shape=(m, max_len, 2)  [样本数量, 位置, 起点？终点]
             batch_object_labels = torch.tensor(batch_object_labels, dtype=torch.float).view(config.batch_size,  # batch_subject_labels: 这个对于batch里面每一个数据i，O在text中的起点、终点，shape=(m, max_len, 2)  [样本数量, 位置, 起点？终点]
                                                                                             config.max_seq_len,
-                                                                                            config.num_p * 2)
-            batch_subject_ids = torch.tensor(batch_subject_ids, dtype=torch.int) # batch_subject_ids: 记录每个样本的的S的start和end位置:[start, end] 一个batch一共m个样本, 所以shape=(m, 2)
+                                                                                            config.num_p * 2).cuda()
+            batch_subject_ids = torch.tensor(batch_subject_ids, dtype=torch.int).cuda() # batch_subject_ids: 记录每个样本的的S的start和end位置:[start, end] 一个batch一共m个样本, 所以shape=(m, 2)
 
             batch_subject_labels_pred, hidden_states = model4s(batch_token_ids, batch_mask_ids, batch_segment_ids)  # 预测主体：每一个字是起/始的概率
             loss4s = loss_fn(batch_subject_labels_pred, batch_subject_labels.to(torch.float32))  # 交叉熵损失： batch_subject_labels_pred：预测值； batch_subject_labels：真实label
@@ -245,7 +245,7 @@ def train(train_data_loader, model4s, model4po, optimizer):
               time.time() - begin_time)
 
     del train_data_loader
-    gc.collect();
+    gc.collect()
 
     return {
         "model4s_state_dict": model4s.state_dict(),
@@ -263,11 +263,11 @@ def extract_spoes(text, model4s, model4po):   # 使用：提取关系spo
         tokenizer = config.tokenizer
         max_seq_len = config.max_seq_len
         token_ids = torch.tensor(
-            tokenizer.encode(text, max_length=max_seq_len, pad_to_max_length=True, add_special_tokens=True)).view(1, -1)
+            tokenizer.encode(text, max_length=max_seq_len, pad_to_max_length=True, add_special_tokens=True)).view(1, -1).cuda()
         if len(text) > max_seq_len - 2:
             text = text[:max_seq_len - 2]
-        mask_ids = torch.tensor([1] * (len(text) + 2) + [0] * (max_seq_len - len(text) - 2)).view(1, -1)
-        segment_ids = torch.tensor([0] * max_seq_len).view(1, -1)
+        mask_ids = torch.tensor([1] * (len(text) + 2) + [0] * (max_seq_len - len(text) - 2)).view(1, -1).cuda()
+        segment_ids = torch.tensor([0] * max_seq_len).view(1, -1).cuda()
         subject_labels_pred, hidden_states = model4s(token_ids, mask_ids, segment_ids)
         subject_labels_pred = subject_labels_pred.cpu()
         subject_labels_pred[0, len(text) + 2:, :] = 0
@@ -283,7 +283,7 @@ def extract_spoes(text, model4s, model4po):   # 使用：提取关系spo
 
         if len(subjects) == 0:
             return []
-        subject_ids = torch.tensor(subjects).view(1, -1)
+        subject_ids = torch.tensor(subjects).view(1, -1).cuda()
 
         spoes = []
         for s in subjects:
@@ -393,15 +393,15 @@ def run_train():
     # train
     train_data_loader = IterableDataset(train_data, True)
     num_train_data = len(train_data)
-    checkpoint = torch.load(config.PATH_MODEL)
+    # checkpoint = torch.load(config.PATH_MODEL)
 
     model4s = Model4s()  # 预测subject(主体)
-    model4s.load_state_dict(checkpoint['model4s_state_dict'])
-    # model4s.cuda()
+    # model4s.load_state_dict(checkpoint['model4s_state_dict'])
+    model4s.cuda()
 
     model4po = Model4po()  # 预测predicate(谓语)和object(客体)
-    model4po.load_state_dict(checkpoint['model4po_state_dict'])
-    # model4po.cuda()
+    # model4po.load_state_dict(checkpoint['model4po_state_dict'])
+    model4po.cuda()
 
     param_optimizer = list(model4s.named_parameters()) + list(model4po.named_parameters())
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -412,7 +412,7 @@ def run_train():
 
     lr = config.learning_rate
     optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
     checkpoint = train(train_data_loader, model4s, model4po, optimizer)  # 开始训练
 
@@ -422,6 +422,36 @@ def run_train():
     model_path = config.PATH_SAVE
     torch.save(checkpoint, model_path)
     print('saved!')
+
+    # valid_data = torch.tensor(valid_data, dtype=torch.long).cuda()
+
+    # valid
+    model4s.eval()
+    model4po.eval()
+    f1, precision, recall = evaluate(valid_data, True, model4s, model4po)
+    print('f1: %.5f, precision: %.5f, recall: %.5f' % (f1, precision, recall))
+
+
+def validate_model():
+    load_schema(config.PATH_SCHEMA)  # 读所有关系,形成列表和id映射
+    train_path = config.PATH_TRAIN
+    all_data = load_data(
+        train_path)  # 形成[(text, spo)]列表，即[{'text':'SxxPxxOxxx', 'sop_list': [['S0','P0','O0'],['S1','P1','O1'],...]}, {'text':'', 'spo_list':[...]} ...]
+    random.shuffle(all_data)
+
+    # 8:2划分训练集、验证集
+    idx = int(len(all_data) * 0.8)
+    train_data = all_data[:idx]
+    valid_data = all_data[idx:]
+
+    checkpoint = torch.load(config.PATH_SAVE)
+    model4s = Model4s()  # 预测subject(主体)
+    model4s.load_state_dict(checkpoint['model4s_state_dict'])
+    model4s.cuda()
+
+    model4po = Model4po()  # 预测predicate(谓语)和object(客体)
+    model4po.load_state_dict(checkpoint['model4po_state_dict'])
+    model4po.cuda()
 
     # valid
     model4s.eval()
@@ -463,6 +493,7 @@ def get_triples(content, model4s, model4po):  # 使用模型
 if __name__ == "__main__":
 
     run_train()
+    # validate_model()
 
     # with open(config.PATH_TRAIN, 'r', encoding="utf-8", errors='replace') as f:
     #     data = json.load(f)
